@@ -1,0 +1,4 @@
+# Local build products
+**/build-py39/
+**/__pycache__/
+*.pyc
