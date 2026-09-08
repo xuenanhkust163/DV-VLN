@@ -1,60 +1,49 @@
-# DV-VLN 论文修订路线
+# DV-VLN 论文修订计划（Applied Sciences 投稿版）
 
-## 当前定位
+## 投稿定位
 
 DV-VLN 的核心贡献是面向语言化视觉导航（vision-to-text VLN）的推理时双重验证：先采样多个候选动作，再用 True–False Verification（TFV）和 Masked-Entity Verification（MEV）进行重排。当前实验验证的是 Matterport3D/Habitat 中的离散 waypoint 导航。
 
-应避免将系统表述为真正端到端或已完成机器人部署验证的通用 VLA。当前工作没有实车、真实传感器、连续控制或 sim-to-real 闭环验证。
+本文实验基于 Matterport3D/Habitat 中的离散 waypoint 导航。论文应明确这是仿真 benchmark 上的模块化 VLN 方法，不应表述为已完成真实机器人部署、连续控制或通用 VLA 验证。
 
-## 必须修订
+## 必须完成的修订
 
-- 将 “end-to-end” 改为模块化的 vision-to-text / language-mediated navigation 表述。
-- 明确声明实验为仿真和离线 benchmark；在 limitations 中说明暂无实车验证。
-- 在完整 Val Unseen 上重跑主要结果，而不只依赖 90 条子集。
-- 使用至少 3 个随机种子，报告均值、标准差和置信区间。
-- 报告推理成本：LLM 调用次数、token 数、GPU 显存、平均延迟和每条轨迹耗时。
-- 修正损失函数的序列交叉熵写法，并统一候选数与全景视角数的符号。
+### 1. 实验结果可信度
 
-## 最有价值的新增实验
+- 在完整的 Val Unseen 集上报告主要结果，不只使用 90 条子集。
+- 使用至少 3 个随机种子，报告均值和标准差；如计算方便，可补充置信区间。
+- 核对数据划分、评价指标、候选数量、全景视角数量和所有实验设置。
 
-### 可靠性
+### 2. 核心消融与 baseline
 
-- candidate recall：正确动作是否进入采样候选集；
-- TFV/MEV 的 candidate-level accuracy、precision、recall 和 AUROC；
-- calibration / ECE；
-- 首次错误后的恢复率和轨迹错误数；
-- majority vote、LLM log-probability、TFV-only、MEV-only、随机验证器等 baseline。
+至少包含：不使用验证器、仅 TFV、仅 MEV、TFV + MEV，以及 majority vote 或普通 LLM 重排等一个简单 baseline。重点回答性能提升是否确实来自双重验证。
 
-### 视觉输入
+### 3. 方法和论文表述
 
-比较 BLIP、BLIP-2 或更强 VLM，以及 caption、物体标签、方向信息的组合。使用 2×2 实验区分性能提升究竟来自更强视觉描述还是双重验证机制。
+- 修正序列交叉熵等损失函数写法，统一符号和维度定义。
+- 明确候选生成、TFV、MEV 和最终动作选择流程。
+- 将 “end-to-end” 改为模块化或 language-mediated VLN。
+- 在 limitations 中说明当前仅在仿真和离散 waypoint 设置下验证。
 
-### 鲁棒性
+### 4. 可复现性与成本
 
-加入实体删除、方向词替换、无关描述、候选顺序打乱、历史屏蔽、指令改写、图像模糊/遮挡和 hard-negative 候选，比较 direct、sampling 和 DV-VLN。
+- 补充代码、数据、模型和运行环境说明。
+- 简要报告平均 LLM 调用次数、单条轨迹耗时或平均延迟；可获得时再报告 token 数和 GPU 显存。
 
-### 最小现实验证
+## 建议但非必需的增强
 
-在 20–50 个真实室内场景上采集候选视角，测试短程方向选择；如果暂时没有机器人，加入图像退化、观测延迟和动作执行误差，并称为 sim-to-real robustness proxy，而非真实机器人验证。
+根据资源，可增加 candidate recall/验证器准确率分析，或一项输入扰动 / hard-negative 鲁棒性实验。
 
-## 方法改进方向
+## 当前阶段不必强求
 
-- 自适应验证预算：仅对候选分歧大或置信度低的步骤启动 TFV/MEV；
-- 使用归一化或校准后的 TFV/MEV 分数，避免实体数量影响 MEV；
-- 引入独立 verifier 或冻结 verifier，减少同一 LLM 自我确认偏差；
-- 将候选验证扩展为短期未来状态/地图一致性检查；
-- 增加 abstain、重新观察或安全停止策略。
-
-## 相关进展与比较原则
-
-补充讨论强视觉语言模型、VLA、在线地图/空间记忆、world model、test-time scaling 和 Habitat 3.0/VLN-CE。离散 waypoint VLN、视觉语言导航、连续控制 VLN 和通用 VLA 应分组比较，避免不公平横向排名。
+真实机器人验证、多种 VLM 大规模组合、AUROC/ECE、自适应预算、独立 verifier、sim-to-real 闭环、连续控制及 Habitat 3.0 或通用 VLA 的大范围比较，均非 Applied Sciences 投稿硬性要求。
 
 ## 推荐执行顺序
 
-1. 完整 Val Unseen + 多随机种子 + 成本统计；
-2. candidate-level 验证器分析和强 baseline；
-3. BLIP/强 VLM 对照；
-4. 输入扰动与 hard-negative 鲁棒性；
-5. 真实室内图像或仿真到现实代理实验；
+1. 完整 Val Unseen + 3 个随机种子；
+2. TFV/MEV 消融和一个简单 baseline；
+3. 修正公式、符号、实验设置和限制说明；
+4. 补充运行成本与复现信息；
+5. 视资源增加一项轻量分析；
 6. 根据结果收窄标题、摘要和贡献表述。
 
