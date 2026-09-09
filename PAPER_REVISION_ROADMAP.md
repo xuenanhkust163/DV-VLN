@@ -3,11 +3,11 @@
 This checklist tracks the revision plan for the reviewer feedback. Each item will be updated in the separate file `jsen_edit.tex` first, and only after approval will the same change be applied to the main manuscript if needed.
 
 ## Phase 1: Clarify contribution and novelty
-- [ ] Rephrase the abstract to reduce over-claiming and make the contribution more precise.
-- [ ] Clarify the novelty boundary relative to Self-Verification / generate-then-verify methods.
-- [ ] State explicitly what is newly designed for VLN, beyond adapting general verification ideas.
-- [ ] Tighten the contribution list so it focuses on navigation-specific verification and re-ranking, not generic LLM reasoning.
-- [ ] Ensure the Related Work text distinguishes prior general verification methods from VLN-specific design choices.
+- [x] Rephrase the abstract to reduce over-claiming and make the contribution more precise.
+- [x] Clarify the novelty boundary relative to Self-Verification / generate-then-verify methods.
+- [x] State explicitly what is newly designed for VLN, beyond adapting general verification ideas.
+- [x] Tighten the contribution list so it focuses on navigation-specific verification and re-ranking, not generic LLM reasoning.
+- [x] Ensure the Related Work text distinguishes prior general verification methods from VLN-specific design choices.
 
 ## Phase 2: Method details and technical clarity
 - [ ] Clarify the definition and role of Prediction–View Match–Action in the method section.
