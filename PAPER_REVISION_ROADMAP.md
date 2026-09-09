@@ -1,49 +1,73 @@
-# DV-VLN 论文修订计划（Applied Sciences 投稿版）
+# DV-VLN Revision Checklist
 
-## 投稿定位
+This checklist tracks the revision plan for the reviewer feedback. Each item will be updated in the separate file `jsen_edit.tex` first, and only after approval will the same change be applied to the main manuscript if needed.
 
-DV-VLN 的核心贡献是面向语言化视觉导航（vision-to-text VLN）的推理时双重验证：先采样多个候选动作，再用 True–False Verification（TFV）和 Masked-Entity Verification（MEV）进行重排。当前实验验证的是 Matterport3D/Habitat 中的离散 waypoint 导航。
+## Phase 1: Clarify contribution and novelty
+- [ ] Rephrase the abstract to reduce over-claiming and make the contribution more precise.
+- [ ] Clarify the novelty boundary relative to Self-Verification / generate-then-verify methods.
+- [ ] State explicitly what is newly designed for VLN, beyond adapting general verification ideas.
+- [ ] Tighten the contribution list so it focuses on navigation-specific verification and re-ranking, not generic LLM reasoning.
+- [ ] Ensure the Related Work text distinguishes prior general verification methods from VLN-specific design choices.
 
-本文实验基于 Matterport3D/Habitat 中的离散 waypoint 导航。论文应明确这是仿真 benchmark 上的模块化 VLN 方法，不应表述为已完成真实机器人部署、连续控制或通用 VLA 验证。
+## Phase 2: Method details and technical clarity
+- [ ] Clarify the definition and role of Prediction–View Match–Action in the method section.
+- [ ] Explain the exact matching rule used in MEV and whether it is exact string match, normalized string match, or semantic matching.
+- [ ] State how candidate selection, tie-breaking, and verification budget are handled in practice.
+- [ ] Clarify whether the same LLM/backbone is used for generation and verification, or whether different models are involved.
+- [ ] Add a concise discussion of edge cases where MEV may be weak or less informative.
 
-## 必须完成的修订
+## Phase 3: Experimental protocol and fairness
+- [ ] Distinguish clearly between the compact ablation subset and the full validation set.
+- [ ] State explicitly which tables use the full validation set and which use the subset.
+- [ ] Add notes on data sources for baseline numbers and whether they are directly reported or reproduced.
+- [ ] Check all cross-dataset comparisons and clarify whether results correspond to zero-shot transfer or separate training.
+- [ ] Review the wording around “competitive,” “generalization,” and “significantly improves” to make claims more precise.
 
-### 1. 实验结果可信度
+## Phase 4: Ablation and statistical validity
+- [ ] Add or clarify whether the ablation on the small subset is used only as a diagnostic experiment.
+- [ ] Report uncertainty or repeated-run statistics if the subset remains in the main paper.
+- [ ] Add an equal-budget comparison for TFV-only, MEV-only, and TFV+MEV to demonstrate complementarity.
+- [ ] Include a stronger ablation with random or non-matching action candidates to test MEV dependence on the action itself.
+- [ ] Separate the subset-based sensitivity analysis from the final benchmark results.
 
-- 在完整的 Val Unseen 集上报告主要结果，不只使用 90 条子集。
-- 使用至少 3 个随机种子，报告均值和标准差；如计算方便，可补充置信区间。
-- 核对数据划分、评价指标、候选数量、全景视角数量和所有实验设置。
+## Phase 5: Efficiency and reproducibility
+- [ ] Add a latency / inference-time analysis or at least a clear statement that the current paper reports no wall-clock measurement.
+- [ ] Report the computational cost in a more transparent way: candidate count, verification budget, and per-step cost.
+- [ ] Document generation hyperparameters: sampling temperature, top-p, repeated verification budget, etc.
+- [ ] Include the BLIP / CLIP / entity-extraction model details and checkpoints used.
+- [ ] Clarify how duplicated candidates, entity extraction, and same-action candidates are handled.
 
-### 2. 核心消融与 baseline
+## Phase 6: Evaluation metric correctness
+- [ ] Re-check the SPL definition and ensure the formula is written correctly.
+- [ ] Verify the REVERIE evaluation description and whether it is navigation-only or includes object grounding.
+- [ ] Check the wording for R2R / RxR / REVERIE benchmark comparison consistency.
+- [ ] Ensure the narrative matches the exact official evaluator definitions.
 
-至少包含：不使用验证器、仅 TFV、仅 MEV、TFV + MEV，以及 majority vote 或普通 LLM 重排等一个简单 baseline。重点回答性能提升是否确实来自双重验证。
+## Phase 7: Presentation and English polishing
+- [ ] Remove or soften over-strong wording such as “significantly improves” unless backed by a narrow, precise comparison.
+- [ ] Re-check all figure/table references and ensure they match the actual printed text.
+- [ ] Fix minor grammar and wording issues in the English prose.
+- [ ] Ensure all figure annotations and score explanations are readable, especially Fig. 2 / Fig. 4 style examples.
+- [ ] Confirm the page header/year/template fields are consistent with the current manuscript metadata.
 
-### 3. 方法和论文表述
+## Phase 8: Final pass before submission
+- [ ] Recompile the revision file and confirm no LaTeX errors.
+- [ ] Check that all reviewer concerns are directly answered in the revised text.
+- [ ] Confirm the final revision file is cleanly separated from the original manuscript.
+- [ ] Prepare a concise summary of the changes for commit / GitHub push.
+- [ ] Ask for approval before applying the accepted edits to the main manuscript.
 
-- 修正序列交叉熵等损失函数写法，统一符号和维度定义。
-- 明确候选生成、TFV、MEV 和最终动作选择流程。
-- 将 “end-to-end” 改为模块化或 language-mediated VLN。
-- 在 limitations 中说明当前仅在仿真和离散 waypoint 设置下验证。
+## Proposed order of execution
+1. Abstract + contribution list
+2. Novelty / Related Work clarification
+3. MEV / TFV technical definition and matching rule
+4. Experimental protocol and benchmark explanations
+5. Ablation and fairness issues
+6. Efficiency and reproducibility details
+7. Metric correctness and English polishing
+8. Final compile and final approval
 
-### 4. 可复现性与成本
-
-- 补充代码、数据、模型和运行环境说明。
-- 简要报告平均 LLM 调用次数、单条轨迹耗时或平均延迟；可获得时再报告 token 数和 GPU 显存。
-
-## 建议但非必需的增强
-
-根据资源，可增加 candidate recall/验证器准确率分析，或一项输入扰动 / hard-negative 鲁棒性实验。
-
-## 当前阶段不必强求
-
-真实机器人验证、多种 VLM 大规模组合、AUROC/ECE、自适应预算、独立 verifier、sim-to-real 闭环、连续控制及 Habitat 3.0 或通用 VLA 的大范围比较，均非 Applied Sciences 投稿硬性要求。
-
-## 推荐执行顺序
-
-1. 完整 Val Unseen + 3 个随机种子；
-2. TFV/MEV 消融和一个简单 baseline；
-3. 修正公式、符号、实验设置和限制说明；
-4. 补充运行成本与复现信息；
-5. 视资源增加一项轻量分析；
-6. 根据结果收窄标题、摘要和贡献表述。
-
+## Working rule
+- Edit only `jsen_edit.tex` first.
+- Do not overwrite the original `jsen.tex` unless explicitly approved.
+- After each small update, pause for review and approval before proceeding to the next block.
