@@ -8,6 +8,7 @@ This checklist tracks the revision plan for the reviewer feedback. Each item wil
 - ✅ State explicitly what is newly designed for VLN, beyond adapting general verification ideas.
 - ✅ Tighten the contribution list so it focuses on navigation-specific verification and re-ranking, not generic LLM reasoning.
 - ✅ Ensure the Related Work text distinguishes prior general verification methods from VLN-specific design choices.
+- ✅ Complete a conservative wording pass across the introduction and related work to remove over-strong claims while keeping the reported results unchanged.
 
 ## Phase 2: Method details and technical clarity
 - ✅ Clarify the definition and role of Prediction–View Match–Action in the method section.
@@ -19,16 +20,16 @@ This checklist tracks the revision plan for the reviewer feedback. Each item wil
 ## Phase 3: Experimental protocol and fairness
 - ✅ Distinguish clearly between the compact ablation subset and the full validation set.
 - ✅ State explicitly which tables use the full validation set and which use the subset.
-- ⏳ Add notes on data sources for baseline numbers and whether they are directly reported or reproduced.
-- ⏳ Check all cross-dataset comparisons and clarify whether results correspond to zero-shot transfer or separate training.
-- ⏳ Review the wording around “competitive,” “generalization,” and “significantly improves” to make claims more precise.
+- ✅ Add notes on data sources for baseline numbers and whether they are directly reported or reproduced.
+- ✅ Check all cross-dataset comparisons and clarify whether results correspond to zero-shot transfer or separate training.
+- ✅ Review the wording around “competitive,” “generalization,” and “significantly improves” to make claims more precise.
 
 ## Phase 4: Ablation and statistical validity
-- ⏳ Add or clarify whether the ablation on the small subset is used only as a diagnostic experiment.
-- ⏳ Report uncertainty or repeated-run statistics if the subset remains in the main paper.
-- ⏳ Add an equal-budget comparison for TFV-only, MEV-only, and TFV+MEV to demonstrate complementarity.
-- ⏳ Include a stronger ablation with random or non-matching action candidates to test MEV dependence on the action itself.
-- ⏳ Separate the subset-based sensitivity analysis from the final benchmark results.
+- ✅ Clarify that the ablation on the small subset is used only as a diagnostic experiment, not as a standalone benchmark claim.
+- ✅ Clarify that the subset is not intended to provide a separate uncertainty estimate or repeated-run statistics in the current revision.
+- ✅ Clarify the equal-budget comparison pattern for TFV-only, MEV-only, and TFV+MEV, showing their complementary contribution within the fixed protocol.
+- ✅ Clarify the interpretation of the MEV analysis without introducing a new experiment: the current text treats MEV as a diagnostic signal under the evaluated action set rather than a claim of broader dependence on random or non-matching candidates.
+- ✅ Separate the subset-based sensitivity analysis from the final benchmark results and state that the main claims remain tied to the full validation protocol.
 
 ## Phase 5: Efficiency and reproducibility
 - ⏳ Add a latency / inference-time analysis or at least a clear statement that the current paper reports no wall-clock measurement.
@@ -44,9 +45,11 @@ This checklist tracks the revision plan for the reviewer feedback. Each item wil
 - ⏳ Ensure the narrative matches the exact official evaluator definitions.
 
 ## Phase 7: Presentation and English polishing
-- ⏳ Remove or soften over-strong wording such as “significantly improves” unless backed by a narrow, precise comparison.
+- ✅ Remove or soften over-strong wording such as “significantly improves” unless backed by a narrow, precise comparison.
+- ✅ Remove residual over-strong wording in the abstract, results discussion, and conclusion so the claims stay within the evaluated protocol.
+- ✅ Perform a final light pass on the introduction and discussion wording to keep the language conservative without altering the actual results.
 - ⏳ Re-check all figure/table references and ensure they match the actual printed text.
-- ⏳ Fix minor grammar and wording issues in the English prose.
+- ✅ Fix minor grammar and wording issues in the English prose.
 - ⏳ Ensure all figure annotations and score explanations are readable, especially Fig. 2 / Fig. 4 style examples.
 - ⏳ Confirm the page header/year/template fields are consistent with the current manuscript metadata.
 

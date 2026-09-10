@@ -82,3 +82,52 @@
 - 要点：每次修订都同步写入 revision log，并更新英文/中文 checklist 的状态。
 - 处理方式：采用“随改随记”的方式，记载修改对象、原因和目的，确保版本控制清晰。
 - 目的：保证修订过程可追踪，可审核，可推送到 GitHub 时作为备用说明。
+
+### 15. 结论段落的保守化修订
+- 要点：把结论语气从“具有普遍优势”收紧为“在当前 benchmark 与协议下的有效性提升”。
+- 将 A："the experimental results show that this verification step improves decision reliability ... while remaining competitive ..."
+- 改成 B："the current results suggest that this verification step provides a useful reliability gain under the evaluated protocol, while remaining within a reasonable range of representative cross-modal systems under a lighter language-only setup."
+- 目的：不改变实验数据，但显著降低 novelty weak 和 over-claiming 的审稿风险，同时保留方法的可信表述边界。
+
+### 16. generalization 叙述的保守化修订
+- 要点：把“generalizes well across datasets”收紧为“remains competitive across the studied settings under the current protocol”。
+- 将 A："DV-VLN generalizes well across datasets with very different instruction styles."
+- 改成 B："DV-VLN remains competitive across datasets with different instruction styles under the current training and evaluation protocol."
+- 目的：在不重做实验的前提下，保留可证明的结论范围，减少审稿人将方法概括为泛化能力过强的质疑。
+
+### 17. 引言中“single-shot decision”论证的保守化
+- 要点：把“it is not enough to ask an LLM to output a single best action”这一类强断言改成更稳妥的引导性表述。
+- 将 A："This shows that for VLN, it is not enough to ask an LLM to output a single best action; instead, we should first generate diverse candidate actions..."
+- 改成 B："This suggests that, in VLN, it may be helpful to consider multiple candidate actions and check them against the instruction, history, and current observations before execution, rather than relying on a single direct decision alone."
+- 目的：保留动机和解释逻辑，但避免在引言里给出过强的绝对判断，降低审稿上的挑刺余地。
+
+### 18. 贡献列表的保守化
+- 要点：将“improves navigation robustness over direct prediction and sampling-only baselines”收成“在 evaluated language-only protocol 下提供 useful reliability gain”。
+- 将 A："showing that verification-guided re-ranking improves navigation robustness over direct prediction and sampling-only baselines under standard language-only settings."
+- 改成 B："the current results suggest that verification-guided re-ranking provides a useful reliability gain over direct prediction and sampling-only baselines under the evaluated language-only protocol."
+- 目的：在不改变实验结果的前提下，保持贡献描述可证实且更稳妥，避免审稿人将其解读为广义泛化性结论。
+
+### 19. 批量保守措辞修订
+- 要点：在引言、方法和相关工作中，对“new path / end-to-end / strongly / significantly / bottleneck / impressive”等强表述进行保守化处理。
+- 处理方式：将其改为“promising direction / built on the same backbone / can influence / useful gain / practical bottleneck / practical balance”等更稳妥的说法。
+- 目的：保证文稿在不重做实验、不改结果的前提下，仍能保持审稿友好、边界清晰、结论可证明。
+
+### 20. 最终收口版保守化
+- 要点：继续收紧摘要、结果讨论和结论中的剩余高强度措辞，尤其关注 “improves robustness / clear gains / substantially outperform / strong generalization” 等句式。
+- 处理方式：改成更稳健、可验证的表述，如 “can provide a useful gain / remains competitive / improves over baseline under the evaluated protocol / practical alternative”。
+- 目的：把最终稿的表述压到“审稿友好、但仍保留真实实验证据”的安全区间，不再扩大结论范围。
+
+### 21. 继续小幅收口
+- 要点：对 Introduction 和 Results Discussion 中仍偏强的文句再做轻量修正，避免出现“可被解释为更强泛化”的语气。
+- 处理方式：将 “may be helpful” 改为 “can be useful”，把 “This suggests the benefit” 改为 “This suggests that ... can be beneficial under the evaluation setting considered here”。
+- 目的：保持审稿友好、边界清晰，并在不改变实验结果的前提下进一步降低过强表述的风险。
+
+### 22. 第三阶段：实验协议与公平性完成
+- 要点：完成 Phase 3 的余项，包括 baseline 来源说明、跨数据集比较边界说明，以及对公平性措辞的收紧。
+- 修改内容：在 Experimental Setup 中说明基线数值来自原论文公开协议，并明确不声称跨数据集 zero-shot transfer；在 Generalization section 中说明各数据集按各自协议训练和评测。
+- 目的：让审稿人明确知道比较是“同协议内对照”，而不是扩展到更强泛化结论；同时保持实验层面不改动。
+
+### 23. 第四阶段：消融与统计有效性补齐（说明性版）
+- 要点：在不新增实验的前提下，把 Phase 4 的关键边界补全：诊断子集的用途、固定预算下的解释、以及与主 benchmark 的分界。
+- 修改内容：在 Ablation Study 中明确说明小规模子集用于诊断性分析，而非独立 benchmark；强调当前结论只在已评估协议和固定推理预算下成立；说明 TFV/MEV 互补性是本协议内的观察，不扩展为全局统计结论。
+- 目的：保证审稿人能接受消融结论，但不要求作者在当前版本中补做新的实验或重跑数据。
