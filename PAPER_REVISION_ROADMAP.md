@@ -10,15 +10,15 @@ This checklist tracks the revision plan for the reviewer feedback. Each item wil
 - ✅ Ensure the Related Work text distinguishes prior general verification methods from VLN-specific design choices.
 
 ## Phase 2: Method details and technical clarity
-- ⏳ Clarify the definition and role of Prediction–View Match–Action in the method section.
-- ⏳ Explain the exact matching rule used in MEV and whether it is exact string match, normalized string match, or semantic matching.
-- ⏳ State how candidate selection, tie-breaking, and verification budget are handled in practice.
-- ⏳ Clarify whether the same LLM/backbone is used for generation and verification, or whether different models are involved.
-- ⏳ Add a concise discussion of edge cases where MEV may be weak or less informative.
+- ✅ Clarify the definition and role of Prediction–View Match–Action in the method section.
+- ✅ Explain the exact matching rule used in MEV and whether it is exact string match, normalized string match, or semantic matching.
+- ✅ State how candidate selection, tie-breaking, and verification budget are handled in practice.
+- ✅ Clarify that the same LLM/backbone is used for generation and verification, without introducing a separate learned verifier.
+- ✅ Add a concise discussion of edge cases where MEV may be weak or less informative.
 
 ## Phase 3: Experimental protocol and fairness
-- ⏳ Distinguish clearly between the compact ablation subset and the full validation set.
-- ⏳ State explicitly which tables use the full validation set and which use the subset.
+- ✅ Distinguish clearly between the compact ablation subset and the full validation set.
+- ✅ State explicitly which tables use the full validation set and which use the subset.
 - ⏳ Add notes on data sources for baseline numbers and whether they are directly reported or reproduced.
 - ⏳ Check all cross-dataset comparisons and clarify whether results correspond to zero-shot transfer or separate training.
 - ⏳ Review the wording around “competitive,” “generalization,” and “significantly improves” to make claims more precise.
