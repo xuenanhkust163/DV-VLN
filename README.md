@@ -15,6 +15,8 @@ global consistency, while Masked-Entity Verification (MEV) measures
 fine-grained landmark alignment. Their normalized scores rerank the candidate
 actions before execution.
 
+![DV-VLN framework overview](files/overview.png)
+
 ## Highlights
 
 - Dual verification with complementary TFV and MEV signals.
