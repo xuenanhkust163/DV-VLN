@@ -1,4 +1,15 @@
-# Local build products
-**/build-py39/
+# Local build products and editor caches
+**/build*/
 **/__pycache__/
+**/.ipynb_checkpoints/
 *.pyc
+
+# Runtime outputs and large local assets
+datasets/**/features/
+datasets/**/exprs/
+datasets/**/preds/
+datasets/**/logs/
+*.hdf5
+*.pth
+*.pt
+*.ckpt

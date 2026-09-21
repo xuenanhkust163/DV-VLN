@@ -27,6 +27,10 @@ def parse_args():
     parser.add_argument('--eval_first', action='store_true', default=False)
 
     parser.add_argument('--ob_type', type=str, choices=['cand', 'pano'], default='pano')
+    parser.add_argument('--vlnbert', type=str, default='cmt',
+                        choices=['cmt', 'causal.cmt', 'mmt', 'cmt3cat', 'cmt3stack'])
+    parser.add_argument('--cfg_name', type=str, default='bert-base-uncased',
+                        help='Hugging Face name or local path for the VLN text backbone.')
     parser.add_argument('--test', action='store_true', default=False)
     parser.add_argument('--eval_splits', nargs='+', default=None,
                         help='Validation splits to evaluate; defaults to the legacy split set.')
@@ -116,8 +120,8 @@ def parse_args():
     parser.add_argument('--max_seq_len', type=int, default=512)
     parser.add_argument("--stop_first", action='store_true', default=False)
     parser.add_argument('--temperature', type=float,default=0)
-    parser.add_argument('--candidate_cap_dir', type=str,
-                        default='/path/to/captions')
+    parser.add_argument('--candidate_cap_dir', type=str, default=None,
+                        help='Candidate-caption root; defaults to ROOT_DIR/R2R/captions.')
     #llama2
     parser.add_argument('--llama_type', default='llama', type=str, metavar='MODEL',
                         help='type of llama')
@@ -126,7 +130,7 @@ def parse_args():
     parser.add_argument('--tokenizer_path', type=str, default="../tokenizer.model",
                         help='path to tokenizer.model')
 
-    parser.add_argument('--pretrained_path', default='/path/to/pretrained', type=str, nargs="+",
+    parser.add_argument('--pretrained_path', default=None, type=str, nargs="+",
                         help='directory containing pre-trained checkpoints')
 
     parser.add_argument('--device', default='cuda',
@@ -192,6 +196,8 @@ def postprocess_args(args):
 
     args.connectivity_dir = os.path.join(ROOTDIR, 'R2R', 'connectivity')
     args.scan_data_dir = os.path.join(ROOTDIR, 'Matterport3D', 'v1_unzip_scans')
+    if args.candidate_cap_dir is None:
+        args.candidate_cap_dir = os.path.join(ROOTDIR, 'R2R', 'captions')
 
     if args.dataset == 'rxr':
         args.anno_dir = os.path.join(ROOTDIR, 'RxR', 'annotations')
