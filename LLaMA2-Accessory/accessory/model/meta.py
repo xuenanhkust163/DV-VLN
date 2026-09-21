@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import json
+import os
 from typing import List, Optional
 
 from fairscale.nn.model_parallel import initialize as fs_init
@@ -29,7 +30,9 @@ class MetaModel(nn.Module):
             with open(_, "r") as f:
                 params.update(json.loads(f.read()))
         model_args: ModelArgs = ModelArgs(
-            max_seq_len=max_seq_len, max_batch_size=32, **params
+            max_seq_len=max_seq_len,
+            max_batch_size=int(os.environ.get("DVVLN_MAX_BATCH_SIZE", "32")),
+            **params
         )
         self.tokenizer = Tokenizer(model_path=tokenizer_path)
         model_args.vocab_size = self.tokenizer.n_words

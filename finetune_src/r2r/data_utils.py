@@ -128,7 +128,10 @@ def new_simulator(connectivity_dir, scan_data_dir=None):
     sim.setCameraResolution(WIDTH, HEIGHT)
     sim.setCameraVFOV(math.radians(VFOV))
     sim.setDiscretizedViewingAngles(True)
-    sim.init()
+    if hasattr(sim, 'initialize'):
+        sim.initialize()
+    else:
+        sim.init()
 
     return sim
 
@@ -142,13 +145,24 @@ def get_point_angle_feature(sim, angle_feat_size, baseViewId=0, minus_elevation=
 
     for ix in range(36):
         if ix == 0:
-            sim.newEpisode('ZMojNkEp431', '2f4d90acd4024c269fb0efe49a8ac540', 0, math.radians(-30))
+            try:
+                sim.newEpisode(['ZMojNkEp431'], ['2f4d90acd4024c269fb0efe49a8ac540'], [0], [math.radians(-30)])
+            except TypeError:
+                sim.newEpisode('ZMojNkEp431', '2f4d90acd4024c269fb0efe49a8ac540', 0, math.radians(-30))
         elif ix % 12 == 0:
-            sim.makeAction(0, 1.0, 1.0)
+            try:
+                sim.makeAction([0], [1.0], [1.0])
+            except TypeError:
+                sim.makeAction(0, 1.0, 1.0)
         else:
-            sim.makeAction(0, 1.0, 0)
+            try:
+                sim.makeAction([0], [1.0], [0])
+            except TypeError:
+                sim.makeAction(0, 1.0, 0)
 
         state = sim.getState()
+        if isinstance(state, (list, tuple)):
+            state = state[0]
         assert state.viewIndex == ix
 
         heading = state.heading - base_heading

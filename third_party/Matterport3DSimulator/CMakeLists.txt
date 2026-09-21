@@ -54,7 +54,12 @@ target_link_libraries(tests MatterSim ${JSONCPP_LIBRARIES} ${OpenCV_LIBS})
 add_executable(mattersim_main src/driver/mattersim_main.cpp)
 target_link_libraries(mattersim_main MatterSim)
 
-add_subdirectory(pybind11)
+option(USE_SYSTEM_PYBIND11 "Use an externally installed modern pybind11" OFF)
+if(USE_SYSTEM_PYBIND11)
+  find_package(pybind11 CONFIG REQUIRED)
+else()
+  add_subdirectory(pybind11)
+endif()
 
 find_package(PythonInterp 3)
 message(${PYTHON_EXECUTABLE})

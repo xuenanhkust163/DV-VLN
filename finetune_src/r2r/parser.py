@@ -28,6 +28,10 @@ def parse_args():
 
     parser.add_argument('--ob_type', type=str, choices=['cand', 'pano'], default='pano')
     parser.add_argument('--test', action='store_true', default=False)
+    parser.add_argument('--eval_splits', nargs='+', default=None,
+                        help='Validation splits to evaluate; defaults to the legacy split set.')
+    parser.add_argument('--eval_max_instrs', type=int, default=None,
+                        help='Optional per-split instruction cap for diagnostic smoke tests.')
 
     # Data preparation
     parser.add_argument('--max_instr_len', type=int, default=80)
@@ -137,19 +141,34 @@ def parse_args():
     # RXR
     parser.add_argument('--only_en', action='store_true', default=False)
 
-    # DeepSeek API配置
-    parser.add_argument('--deepseek_api_key', type=str, default='sk-d924565601524d1c865ae1a17630732b',)
-    parser.add_argument('--use_deepseek_api', action='store_true', default=True,)
     parser.add_argument('--num_samples', type=int, default=4,
-                    help='一致性检查时生成的候选答案数量')
+                    help='K: sampled navigation candidates per step')
     parser.add_argument('--top_p', type=float, default=0.9,
-                    help='核采样参数')
+                    help='Nucleus-sampling probability for candidate generation')
     parser.add_argument('--verification_attempts', type=int, default=4,
-                    help='反向验证的尝试次数')
+                    help='P: repeated local verification samples per candidate')
+    parser.add_argument('--verification_temperature', type=float, default=0.3,
+                    help='Sampling temperature for the independent verifier.')
+    parser.add_argument('--verification_mode', choices=['direct', 'vote', 'tfv', 'mev', 'dual', 'mev_pairwise', 'dual_pairwise', 'mev_grounded', 'dual_grounded', 'mev_control'], default='dual',
+                    help='Revision ablation mode: no verifier, vote, TFV, MEV, or TFV+MEV.')
     parser.add_argument('--verbose_consistency', action='store_true', default=False,
-                    help='是否打印一致性检查的详细信息')
+                    help='Print candidate actions and selection decisions.')
     parser.add_argument('--verbose_verification', action='store_true', default=False,
-                    help='是否打印反向验证的详细信息')
+                        help='是否打印反向验证的详细信息')
+    parser.add_argument('--ranking_output', type=str, default=None,
+                        help='Optional JSONL path for verifier ranking diagnostics.')
+    parser.add_argument('--ranking_oracle_bank', action='store_true', default=False,
+                        help='Score one oracle action and up to three legal negatives per state.')
+    parser.add_argument('--verifier_model_path', type=str, default=None,
+                        help='Optional Hugging Face causal LM used as an independent verifier.')
+    parser.add_argument('--mev_control_output', type=str, default=None,
+                        help='Optional JSONL path for Full/no-action/random-action MEV controls.')
+    parser.add_argument('--mev_max_entities', type=int, default=1,
+                        help='Maximum number of instruction entities masked per candidate.')
+    parser.add_argument('--mev_weight', type=float, default=0.25,
+                        help='Weight of action-contrastive MEV relative to TFV.')
+    parser.add_argument('--mev_logprob_temperature', type=float, default=1.0,
+                        help='Temperature for mapping MEV log-likelihood margins to [0,1].')
 
     args, _ = parser.parse_known_args()
 

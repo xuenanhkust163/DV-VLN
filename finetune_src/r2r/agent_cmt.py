@@ -3,11 +3,12 @@ import os
 import sys
 import numpy as np
 import random
+import re
+import hashlib
 #from random import *
 import math
 import time
 from collections import defaultdict
-import requests
 import torch
 import torch.nn as nn
 from torch import optim
@@ -52,6 +53,17 @@ class Seq2SeqCMTAgent(BaseAgent):
 
         self.default_gpu = is_default_gpu(self.args)
         self.rank = rank
+        self.ranking_fp = None
+        self._ranking_seen_states = set()
+        if getattr(self.args, 'ranking_output', None) and self.rank in (-1, 0):
+            os.makedirs(os.path.dirname(self.args.ranking_output), exist_ok=True)
+            self.ranking_fp = open(self.args.ranking_output, 'w', buffering=1)
+        self.mev_control_fp = None
+        self._mev_entity_cache = {}
+        self._mev_logprob_cache = {}
+        if getattr(self.args, 'mev_control_output', None) and self.rank in (-1, 0):
+            os.makedirs(os.path.dirname(self.args.mev_control_output), exist_ok=True)
+            self.mev_control_fp = open(self.args.mev_control_output, 'w', buffering=1)
 
         # Models
         self._build_model()
@@ -96,7 +108,8 @@ class Seq2SeqCMTAgent(BaseAgent):
         if self.args.llm_predict:
             self.prompt_manager = PromptManager(self.args)
 
-            sys.path.append("/path/to/VLN-SIG/LLaMA2-Accessory/accessory")
+            local_accessory = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../LLaMA2-Accessory/accessory'))
+            sys.path.append(local_accessory)
             from util.tensor_type import default_tensor_type
             from util.tensor_parallel import load_tensor_parallel_model_list
             from model.meta import MetaModel
@@ -114,6 +127,15 @@ class Seq2SeqCMTAgent(BaseAgent):
             print("Model = %s" % str(self.llm))
             #self.llm.bfloat16().cuda()
             self.llm.cuda()
+            if getattr(self.args, 'verifier_model_path', None):
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+                verifier_path = self.args.verifier_model_path
+                print(f"load independent verifier from {verifier_path}")
+                self.verifier_tokenizer = AutoTokenizer.from_pretrained(
+                    verifier_path, local_files_only=True)
+                self.verifier_llm = AutoModelForCausalLM.from_pretrained(
+                    verifier_path, local_files_only=True, dtype=target_dtype
+                ).cuda().eval()
         else:
             self.vln_bert = VLNBertCMT(self.args).cuda()
             self.critic = Critic(self.args).cuda()
@@ -370,9 +392,17 @@ class Seq2SeqCMTAgent(BaseAgent):
         """
         def take_action(i, name):
             if type(name) is int:       # Go to the next view
-                self.env.env.sims[i].makeAction(name, 0, 0)
+                args = (name, 0, 0)
             else:                       # Adjust
-                self.env.env.sims[i].makeAction(*self.env_actions[name])
+                args = self.env_actions[name]
+            try:
+                self.env.env.sims[i].makeAction(*args)
+            except TypeError:
+                self.env.env.sims[i].makeAction([args[0]], [args[1]], [args[2]])
+
+        def get_state(i):
+            state = self.env.env.sims[i].getState()
+            return state[0] if isinstance(state, (list, tuple)) else state
 
         for i, ob in enumerate(obs):
             action = a_t[i]
@@ -388,13 +418,13 @@ class Seq2SeqCMTAgent(BaseAgent):
                 while src_level > trg_level:    # Tune down
                     take_action(i, 'down')
                     src_level -= 1
-                while self.env.env.sims[i].getState().viewIndex != trg_point:    # Turn right until the target
+                while get_state(i).viewIndex != trg_point:    # Turn right until the target
                     take_action(i, 'right')
                 assert select_candidate['viewpointId'] == \
-                       self.env.env.sims[i].getState().navigableLocations[select_candidate['idx']].viewpointId
+                       get_state(i).navigableLocations[select_candidate['idx']].viewpointId
                 take_action(i, select_candidate['idx'])
 
-                state = self.env.env.sims[i].getState()
+                state = get_state(i)
                 if traj is not None:
                     traj[i]['path'].append((state.location.viewpointId, state.heading, state.elevation))
 
@@ -1039,41 +1069,42 @@ class Seq2SeqCMTAgent(BaseAgent):
                 cand_inputs = self._candidate_variable(obs = obs, previous_angle = previous_angle)
 
                 nav_input = self.prompt_manager.get_prompt(mode = 'navigation', cand_inputs = cand_inputs, obs = obs, t = t)
-                # 修改部分：使用sampling decoding生成多个候选答案
-                num_samples = getattr(self.args, 'num_samples', 3)  # 默认生成3个候选答案
-                all_nav_outputs = []
-                all_a_t_llm = []
-                
-                # 生成多个候选答案
-                for sample_idx in range(num_samples):
-                    nav_output = self.llm.generate(
-                        nav_input["prompts"],
-                        images=None,
-                        max_gen_len=64,
-                        temperature=max(self.args.temperature, 0.7),  # 确保有足够的随机性
-                        top_p=getattr(self.args, 'top_p', 0.9)  
+                if 'nav_targets' in locals():
+                    raw_gt_actions = [int(x) for x in nav_targets.detach().cpu().tolist()]
+                    if self.args.stop_first:
+                        self._ranking_gt_actions = [
+                            0 if gt == cand_inputs['cand_lens'][i] - 1 else gt + 1
+                            for i, gt in enumerate(raw_gt_actions)
+                        ]
+                    else:
+                        self._ranking_gt_actions = raw_gt_actions
+                else:
+                    self._ranking_gt_actions = None
+                self._ranking_obs = obs
+                self._ranking_step = t
+                self._ranking_instr_ids = [ob.get('instr_id') for ob in obs]
+                if getattr(self.args, 'ranking_oracle_bank', False):
+                    a_t_llm = self._score_oracle_ranking_bank(nav_input, obs, t)
+                else:
+                    num_samples = getattr(self.args, 'num_samples', 3)
+                    all_nav_outputs = []
+                    all_a_t_llm = []
+                    for _ in range(num_samples):
+                        nav_output = self.llm.generate(
+                            nav_input["prompts"], images=None, max_gen_len=64,
+                            temperature=max(self.args.temperature, 0.7),
+                            top_p=getattr(self.args, 'top_p', 0.9)
+                        )
+                        all_nav_outputs.append(nav_output)
+                        all_a_t_llm.append(self.prompt_manager.get_output(
+                            nav_output=nav_output,
+                            only_options_batch=nav_input["only_options"],
+                            cand_inputs=cand_inputs, t=t
+                        ))
+                    a_t_llm = self._select_action_with_consistency_check(
+                        all_a_t_llm, all_nav_outputs, nav_input, cand_inputs,
+                        obs, t, batch_size
                     )
-                    all_nav_outputs.append(nav_output)
-                        
-                    # 获取每个样本的动作
-                    a_t_llm_sample = self.prompt_manager.get_output(
-                        nav_output=nav_output,
-                        only_options_batch=nav_input["only_options"],
-                        cand_inputs=cand_inputs, 
-                        t=t
-                    )
-                    all_a_t_llm.append(a_t_llm_sample)
-                
-                # 检查动作一致性并选择最终动作
-                a_t_llm = self._select_action_with_consistency_check(
-                    all_a_t_llm, 
-                    all_nav_outputs, 
-                    nav_input, 
-                    cand_inputs, 
-                    obs, 
-                    t,
-                    batch_size
-                )
             else:
                 assert False
 
@@ -1143,7 +1174,8 @@ class Seq2SeqCMTAgent(BaseAgent):
             # 检查动作是否一致
             unique_actions = list(set(actions_for_batch))
             
-            if len(unique_actions) == 1:
+            if (len(unique_actions) == 1 and self.ranking_fp is None
+                    and self.mev_control_fp is None):
                 # 所有动作都相同，直接使用
                 selected_action = unique_actions[0]
                 if getattr(self.args, 'verbose_consistency', False):
@@ -1154,7 +1186,7 @@ class Seq2SeqCMTAgent(BaseAgent):
                     print(f"Step {t}, Batch {batch_idx}: Actions differ: {actions_for_batch}")
                 
                 # 调用反向验证函数
-                selected_action = self._reverse_verification_selection(
+                selected_action = self._select_with_revision_protocol(
                     actions_for_batch,
                     [output[batch_idx] for output in all_nav_outputs],
                     nav_input,
@@ -1168,7 +1200,693 @@ class Seq2SeqCMTAgent(BaseAgent):
             final_actions.append(selected_action)
         
         return final_actions
-        
+
+    def _select_with_revision_protocol(self, actions, outputs, nav_input, cand_inputs, obs, t, batch_idx):
+        """Run the revision ablation with local LLaMA generation and verification."""
+        mode = self.args.verification_mode
+        if mode == 'direct':
+            return actions[0]
+        if mode == 'vote':
+            return max(dict.fromkeys(actions), key=actions.count)
+
+        instruction = obs.get('instruction', 'Navigation instruction')
+        observation = ' '.join(nav_input['action_options'][batch_idx])
+        history = self.prompt_manager.history[batch_idx] or 'None'
+        candidates = []
+        for action, output in zip(actions, outputs):
+            if action not in [candidate[0] for candidate in candidates]:
+                candidates.append((action, output))
+        pairwise_mev = mode in ('mev_pairwise', 'dual_pairwise', 'mev_grounded', 'dual_grounded')
+        mev_entities = (self._extract_mev_entities(
+                            instruction, history=history,
+                            observation=observation)
+                        if mode in ('mev', 'dual', 'mev_pairwise', 'dual_pairwise', 'mev_grounded', 'dual_grounded') else [])
+
+        scores = []
+        score_records = []
+        for action, output in candidates:
+            tfv_raw = self._local_verification_score(
+                f'Instruction: {instruction}\nObservation: {observation}\nHistory: {history}\n'
+                f'Candidate reasoning: {output}\n'
+                'Classify the candidate as TRUE if it is a plausible next step, otherwise FALSE. '
+                'Output exactly one word: TRUE or FALSE. Do not output navigation reasoning.'
+            ) if mode in ('tfv', 'dual', 'dual_pairwise', 'dual_grounded') else 0
+            tfv_responses = list(getattr(self, '_last_verification_responses', []))
+            tfv = (tfv_raw / self.args.verification_attempts
+                   if mode in ('tfv', 'dual', 'dual_pairwise', 'dual_grounded')
+                   else 0.0)
+            if mode in ('mev', 'dual'):
+                action_options = nav_input['action_options'][batch_idx]
+                action_text = (action_options[action]
+                               if 0 <= action < len(action_options)
+                               else f'option {action}')
+                mev, mev_responses = self._mev_recovery_score(
+                    instruction, observation, history, action_text, mev_entities,
+                    action_options=nav_input['action_options'][batch_idx],
+                    action_index=action,
+                        candidate_indices=[candidate[0] for candidate in candidates])
+            elif pairwise_mev:
+                action_options = nav_input['action_options'][batch_idx]
+                action_text = (action_options[action]
+                               if 0 <= action < len(action_options)
+                               else f'option {action}')
+                mev, mev_responses = self._mev_pairwise_score(
+                    instruction, observation, history, action_text,
+                    action, candidates, action_options, mev_entities,
+                    grounded=mode in ('mev_grounded', 'dual_grounded'))
+            else:
+                mev, mev_responses = 0.0, []
+            scores.append((action, tfv, mev))
+            score_records.append({
+                'action': int(action), 'tfv': float(tfv), 'mev': float(mev),
+                'total': float(tfv + self.args.mev_weight * mev),
+                'mev_weight': float(self.args.mev_weight),
+                'tfv_responses': tfv_responses,
+                'mev_responses': mev_responses, 'mev_entities': mev_entities,
+                'mev_available': bool(mev_entities),
+            })
+
+        if self.mev_control_fp is not None:
+            self._run_mev_language_controls(
+                candidates=candidates,
+                instruction=instruction,
+                observation=observation,
+                history=history,
+                action_options=nav_input['action_options'][batch_idx],
+                gt_action=(self._ranking_gt_actions[batch_idx]
+                           if self._ranking_gt_actions is not None else None),
+                instr_id=self._ranking_instr_ids[batch_idx],
+                viewpoint=self._ranking_obs[batch_idx].get('viewpoint'),
+                step=t,
+            )
+
+        if mode == 'mev_control':
+            return actions[0]
+
+        if self.ranking_fp is not None:
+            gt = None
+            if getattr(self, '_ranking_gt_actions', None) is not None:
+                gt = self._ranking_gt_actions[batch_idx]
+            rec = {
+                'instr_id': self._ranking_instr_ids[batch_idx],
+                'step': int(getattr(self, '_ranking_step', -1)),
+                'viewpoint': self._ranking_obs[batch_idx].get('viewpoint'),
+                'gt_action': int(gt) if gt is not None else None,
+                'mode': mode,
+                'verifier_type': ('independent_qwen' if getattr(self, 'verifier_llm', None)
+                                  is not None else 'local_llama_generation'),
+                'candidates': score_records,
+            }
+            self.ranking_fp.write(json.dumps(rec) + '\n')
+
+        # Stable tie-break: TFV score, then original candidate order.
+        selected = max(enumerate(scores), key=lambda item: (
+            item[1][1] + self.args.mev_weight * item[1][2],
+            item[1][1], -item[0]
+        ))[1][0]
+        if self.args.verbose_consistency:
+            print(f'DV-VLN step={t} mode={mode} candidates={scores} selected={selected}')
+        return selected
+
+    def _local_verification_score(self, prompt):
+        score = 0
+        responses = []
+        if getattr(self, 'verifier_llm', None) is not None:
+            messages = [{'role': 'user', 'content': prompt}]
+            text = self.verifier_tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.verifier_tokenizer(text, return_tensors='pt').to('cuda')
+            with torch.inference_mode():
+                generated = self.verifier_llm.generate(
+                    **inputs, max_new_tokens=10, do_sample=True,
+                    temperature=self.args.verification_temperature,
+                    top_p=1.0, top_k=0,
+                    num_return_sequences=self.args.verification_attempts,
+                    pad_token_id=self.verifier_tokenizer.eos_token_id)
+            answers = [self.verifier_tokenizer.decode(
+                sequence[inputs.input_ids.shape[1]:], skip_special_tokens=True
+            ).strip() for sequence in generated]
+        else:
+            attempts = self.args.verification_attempts
+            answers = self.llm.generate(
+                [prompt] * attempts, images=None, max_gen_len=8,
+                temperature=self.args.verification_temperature, top_p=1.0,
+            )
+
+        for answer in answers:
+            if getattr(self, 'verifier_llm', None) is None:
+                # The local same-model diagnostic requires a binary answer at
+                # the beginning of the response; navigation text containing
+                # the word "true" must not be counted as a positive judgment.
+                match = re.match(r'\s*(true|false)\b', answer, re.IGNORECASE)
+                parsed = bool(match and match.group(1).lower() == 'true')
+                parseable = bool(match)
+            else:
+                parsed = self._parse_verification_response(answer)
+                parseable = bool(re.fullmatch(
+                    r'\s*(true|false)[.!]?\s*', answer, re.IGNORECASE))
+            responses.append({
+                'text': answer,
+                'label': ('TRUE' if parsed else 'FALSE'),
+                'parseable': parseable,
+            })
+            score += int(parsed)
+        self._last_verification_responses = responses
+        return score
+
+    @staticmethod
+    def _original_tfv_prompt(instruction, observation, history, output):
+        return f"""你是一个顶尖的导航推理专家。请根据以下导航智能体的执行记录，判断智能体当前选择的下一步动作是否是正确的。
+
+    输入：
+
+    Instruction：{instruction}
+
+    Observation：{observation}
+
+    History：{history}
+
+    输出：{output}
+
+    基于以上这些分析，判断智能体当前选择的下一步动作是否是正确的。只需回答True或False。"""
+
+    def _score_oracle_ranking_bank(self, nav_input, obs, step):
+        """Score a deterministic oracle-plus-negatives bank and follow the oracle path."""
+        selected_actions = []
+        for batch_idx, ob in enumerate(obs):
+            options = nav_input['action_options'][batch_idx]
+            gt_action = self._ranking_gt_actions[batch_idx]
+            state_key = (ob['instr_id'], int(step), ob['viewpoint'])
+            if state_key in self._ranking_seen_states:
+                selected_actions.append(gt_action)
+                continue
+            self._ranking_seen_states.add(state_key)
+            scan = ob['scan']
+            current = ob['viewpoint']
+            goal = ob['gt_path'][-1]
+            current_distance = self.env.shortest_distances[scan][current][goal]
+
+            positive_actions = []
+            if current_distance < 3.0:
+                positive_actions.append(0 if self.args.stop_first else len(options) - 1)
+            for candidate_idx, candidate in enumerate(ob['candidate']):
+                action_idx = candidate_idx + 1 if self.args.stop_first else candidate_idx
+                next_viewpoint = candidate['viewpointId']
+                edge = self.env.shortest_distances[scan][current][next_viewpoint]
+                remaining = self.env.shortest_distances[scan][next_viewpoint][goal]
+                if abs(edge + remaining - current_distance) < 1e-5:
+                    positive_actions.append(action_idx)
+            positive_actions = sorted(set(positive_actions + [gt_action]))
+
+            negatives = [idx for idx in range(len(options)) if idx not in positive_actions]
+            seed_text = f"0:{ob['instr_id']}:{step}"
+            seed_value = int(hashlib.sha256(seed_text.encode()).hexdigest()[:16], 16)
+            rng = random.Random(seed_value)
+            rng.shuffle(negatives)
+            bank_actions = [gt_action] + negatives[:max(0, self.args.num_samples - 1)]
+            rng.shuffle(bank_actions)
+
+            observation = '[' + ', '.join(options) + ']'
+            history = self.prompt_manager.history[batch_idx] or 'None'
+            candidates = []
+            for action in bank_actions:
+                option_letter = chr(65 + action)
+                candidate_output = (
+                    f'Filtered observation: {options[action]}. Action: {option_letter}.'
+                )
+                prompt = self._original_tfv_prompt(
+                    ob['instruction'], observation, history, candidate_output)
+                score = self._local_verification_score(prompt)
+                responses = list(self._last_verification_responses)
+                candidates.append({
+                    'action': int(action),
+                    'action_text': options[action],
+                    'is_positive': action in positive_actions,
+                    'tfv': float(score),
+                    'tfv_responses': responses,
+                })
+
+            record = {
+                'instr_id': ob['instr_id'],
+                'scan': scan,
+                'step': int(step),
+                'viewpoint': current,
+                'goal_viewpoint': goal,
+                'gt_action': int(gt_action),
+                'positive_actions': positive_actions,
+                'mode': 'tfv_oracle_bank',
+                'verifier_type': (
+                    'independent_qwen_reconstructed_original_tfv'
+                    if getattr(self, 'verifier_llm', None) is not None
+                    else 'same_model_dvvln_llama2_tfv'
+                ),
+                'candidates': candidates,
+            }
+            self.ranking_fp.write(json.dumps(record, ensure_ascii=False) + '\n')
+            selected_actions.append(gt_action)
+        return selected_actions
+
+    @staticmethod
+    def _normalize_mev_text(text):
+        text = text.strip().split('\n', 1)[0]
+        text = re.sub(r'^(answer|entity)\s*:\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'[^a-z0-9\s-]', ' ', text.lower())
+        return ' '.join(text.split())
+
+    def _extract_mev_entities(self, instruction, history=None, observation=None):
+        """Extract the next unresolved landmark for the current navigation state."""
+        cache_key = (instruction, history or '')
+        if cache_key in self._mev_entity_cache:
+            return self._mev_entity_cache[cache_key]
+        prompt = (
+            'Identify the next unresolved physical landmark in a navigation instruction. '
+            'Use the completed action history to skip landmarks already passed. '
+            'Copy an exact phrase from the instruction and output only that phrase.\n'
+            f'Instruction: {instruction}\n'
+            f'Completed history: {history or "None"}\n'
+            f'Current observation: {observation or "None"}\n'
+            'Next unresolved landmark:'
+        )
+        if getattr(self, 'verifier_llm', None) is not None:
+            messages = [{'role': 'user', 'content': prompt}]
+            text = self.verifier_tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.verifier_tokenizer(text, return_tensors='pt').to('cuda')
+            with torch.inference_mode():
+                generated = self.verifier_llm.generate(
+                    **inputs, max_new_tokens=12, do_sample=False,
+                    pad_token_id=self.verifier_tokenizer.eos_token_id)
+            answer = self.verifier_tokenizer.decode(
+                generated[0][inputs.input_ids.shape[1]:],
+                skip_special_tokens=True).strip()
+        else:
+            answer = self.llm.generate(
+                [prompt], images=None, max_gen_len=10, temperature=0, top_p=1.0
+            )[0]
+        proposed = self._normalize_mev_text(answer)
+        candidates = []
+        if (proposed and proposed != 'none'
+                and re.search(rf'\b{re.escape(proposed)}\b', instruction,
+                              flags=re.IGNORECASE)):
+            candidates.append(proposed)
+
+        # Restricted fallback for malformed extractor outputs. Unlike the earlier
+        # unrestricted content-word heuristic, this list contains physical VLN entities.
+        entity_lexicon = {
+            'archway', 'balcony', 'bathroom', 'bed', 'bedroom', 'bench',
+            'cabinet', 'chair', 'chandelier', 'closet', 'column', 'corridor',
+            'couch', 'counter', 'desk', 'dining room', 'door', 'doorway',
+            'entrance', 'entryway', 'fireplace', 'foyer', 'hall', 'hallway',
+            'island', 'kitchen', 'landing', 'mirror', 'office', 'painting',
+            'piano', 'railing', 'room', 'sofa', 'staircase', 'stairs', 'table',
+            'television', 'window',
+        }
+        if not candidates:
+            present = [entity for entity in entity_lexicon
+                       if re.search(rf'\b{re.escape(entity)}\b', instruction,
+                                    flags=re.IGNORECASE)]
+            present.sort(key=lambda item: (-len(item), instruction.lower().find(item)))
+            candidates.extend(present[:1])
+
+        result = candidates[:max(1, self.args.mev_max_entities)]
+        self._mev_entity_cache[cache_key] = result
+        return result
+
+    def _extract_mev_entities_legacy(self, instruction):
+        """Deprecated unrestricted fallback retained for reference only."""
+        stop_words = {
+            'about', 'after', 'again', 'along', 'around', 'before', 'behind',
+            'continue', 'down', 'enter', 'forward', 'from', 'front', 'head',
+            'into', 'left', 'next', 'past', 'right', 'stop', 'straight',
+            'then', 'through', 'toward', 'towards', 'turn', 'until', 'walk',
+            'with', 'your', 'the', 'and', 'that', 'this', 'there', 'where',
+            'you', 'are', 'for', 'near', 'onto', 'out', 'over', 'take', 'veer',
+        }
+        words = re.findall(r"[A-Za-z][A-Za-z-]+", instruction)
+        unique = []
+        for word in words:
+            norm = word.lower()
+            if len(norm) <= 2 or norm in stop_words or norm in unique:
+                continue
+            unique.append(norm)
+        unique.sort(key=lambda item: (-len(item), words.index(next(
+            word for word in words if word.lower() == item))))
+        return unique[:max(1, self.args.mev_max_entities)]
+
+    @staticmethod
+    def _mask_mev_entity(instruction, entity):
+        return re.sub(rf'\b{re.escape(entity)}\b', '[MASK]', instruction,
+                      flags=re.IGNORECASE)
+
+    @staticmethod
+    def _make_mev_recovery_prompt(masked_instruction, observation, history,
+                                  action_text=None):
+        fields = [
+            'Recover the exact entity replaced by [MASK].',
+            'Example 1:',
+            'Masked instruction: Walk past the [MASK] and enter the kitchen.',
+            'Observation: A. stop B. go forward to a sofa C. turn right to a kitchen',
+            'History: None',
+            'Candidate action: B. go forward to a sofa',
+            'Missing entity: sofa',
+            'Example 2:',
+            'Masked instruction: Leave the bedroom through the [MASK].',
+            'Observation: A. stop B. go forward to an open door',
+            'History: None',
+            'Missing entity: door',
+            'Query:',
+            f'Masked instruction: {masked_instruction}',
+            f'Observation: {observation}',
+            f'History: {history}',
+        ]
+        if action_text is not None:
+            fields.append(f'Candidate action: {action_text}')
+        fields.append('Output only the missing entity.\nMissing entity:')
+        return '\n'.join(fields)
+
+    @staticmethod
+    def _make_mev_scoring_prompt(masked_instruction, observation, history,
+                                 action_text):
+        return '\n'.join([
+            'Recover the exact entity replaced by [MASK].',
+            f'Masked instruction: {masked_instruction}',
+            f'Observation: {observation}',
+            f'History: {history}',
+            f'Candidate action: {action_text}',
+            'Output only the missing entity.\nMissing entity:',
+        ])
+
+    @staticmethod
+    def _make_mev_pairwise_prompt(masked_instruction, target_entity,
+                                  observation, history, candidate_action,
+                                  counterfactual_action):
+        """Compare which generated action better supports the current entity."""
+        return '\n'.join([
+            'You are evaluating two candidate navigation actions.',
+            'Compare which action better supports reaching or observing the stated target entity now.',
+            'Use the observation and history. The action text is the only variable that distinguishes the hypotheses.',
+            'Example: if the first action is better, answer CANDIDATE; if the second is better, answer COUNTERFACTUAL.',
+            'Output exactly CANDIDATE or COUNTERFACTUAL.',
+            f'Masked instruction: {masked_instruction}',
+            f'Current target entity: {target_entity}',
+            f'Observation: {observation}',
+            f'History: {history}',
+            f'Candidate action: {candidate_action}',
+            f'Counterfactual action: {counterfactual_action}',
+            'Answer:',
+        ])
+
+    @staticmethod
+    def _hide_mev_entity(text, entity):
+        """Remove direct lexical evidence of the target from every comparison field."""
+        return re.sub(rf'\b{re.escape(entity)}\b', '[MASKED-ENTITY]', text,
+                      flags=re.IGNORECASE)
+
+    def _mev_pairwise_trials(self, prompt):
+        """Sample Qwen's action comparison and parse only the first decision token."""
+        if getattr(self, 'verifier_llm', None) is not None:
+            messages = [{'role': 'user', 'content': prompt}]
+            text = self.verifier_tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.verifier_tokenizer(text, return_tensors='pt').to('cuda')
+            with torch.inference_mode():
+                generated = self.verifier_llm.generate(
+                    **inputs, max_new_tokens=6, do_sample=True,
+                    temperature=self.args.verification_temperature,
+                    top_p=1.0, top_k=0,
+                    num_return_sequences=self.args.verification_attempts,
+                    pad_token_id=self.verifier_tokenizer.eos_token_id)
+            answers = [self.verifier_tokenizer.decode(
+                sequence[inputs.input_ids.shape[1]:], skip_special_tokens=True
+            ).strip() for sequence in generated]
+        else:
+            answers = self.llm.generate(
+                [prompt] * self.args.verification_attempts, images=None,
+                max_gen_len=6, temperature=max(self.args.temperature, 0.7),
+                top_p=self.args.top_p)
+        trials = []
+        for answer in answers:
+            # Prefer the required leading token, but recover labels from a
+            # short explanatory response so formatting noise does not erase a
+            # semantically usable verifier judgment.
+            match = re.match(r'\s*(CANDIDATE|COUNTERFACTUAL)\b', answer,
+                             flags=re.IGNORECASE)
+            if match is None:
+                match = re.search(r'\b(CANDIDATE|COUNTERFACTUAL)\b', answer,
+                                  flags=re.IGNORECASE)
+            label = match.group(1).upper() if match else 'INVALID'
+            trials.append({
+                'raw': answer,
+                'label': label,
+                'parseable': bool(match),
+                'success': label == 'CANDIDATE',
+            })
+        return trials
+
+    @staticmethod
+    def _make_mev_likelihood_prompt(masked_instruction, observation, history,
+                                    action_text):
+        return '\n'.join([
+            'Recover the exact physical landmark replaced by [MASK].',
+            'Base the recovery on whether the candidate action is compatible with the current navigation state.',
+            f'Masked instruction: {masked_instruction}',
+            f'Observation: {observation}',
+            f'History: {history}',
+            f'Candidate action: {action_text}',
+            'Missing entity:',
+        ])
+
+    def _qwen_target_logprob(self, prompt, target):
+        """Mean teacher-forced log probability of target after a verifier prompt."""
+        messages = [{'role': 'user', 'content': prompt}]
+        chat = self.verifier_tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True)
+        prompt_ids = self.verifier_tokenizer(
+            chat, return_tensors='pt', add_special_tokens=False
+        ).input_ids.to('cuda')
+        target_ids = self.verifier_tokenizer(
+            ' ' + target, return_tensors='pt', add_special_tokens=False
+        ).input_ids.to('cuda')
+        input_ids = torch.cat([prompt_ids, target_ids], dim=1)
+        with torch.inference_mode():
+            logits = self.verifier_llm(
+                input_ids=input_ids,
+                attention_mask=torch.ones_like(input_ids),
+            ).logits
+        start = prompt_ids.shape[1] - 1
+        target_logits = logits[:, start:start + target_ids.shape[1], :]
+        token_logprobs = F.log_softmax(target_logits.float(), dim=-1).gather(
+            -1, target_ids.unsqueeze(-1)).squeeze(-1)
+        return float(token_logprobs.mean().item())
+
+    def _mev_recovery_trials(self, prompt, entity):
+        target = self._normalize_mev_text(entity)
+        if getattr(self, 'verifier_llm', None) is not None:
+            messages = [{'role': 'user', 'content': prompt}]
+            text = self.verifier_tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.verifier_tokenizer(text, return_tensors='pt').to('cuda')
+            with torch.inference_mode():
+                generated = self.verifier_llm.generate(
+                    **inputs, max_new_tokens=12, do_sample=True,
+                    temperature=self.args.verification_temperature,
+                    top_p=1.0, top_k=0,
+                    num_return_sequences=self.args.verification_attempts,
+                    pad_token_id=self.verifier_tokenizer.eos_token_id)
+            answers = [self.verifier_tokenizer.decode(
+                sequence[inputs.input_ids.shape[1]:], skip_special_tokens=True
+            ).strip() for sequence in generated]
+        else:
+            prompts = [prompt] * self.args.verification_attempts
+            max_batch_size = self.llm.llma.params.max_batch_size
+            answers = []
+            for start in range(0, len(prompts), max_batch_size):
+                answers.extend(self.llm.generate(
+                    prompts[start:start + max_batch_size], images=None, max_gen_len=12,
+                    temperature=max(self.args.temperature, 0.7),
+                    top_p=self.args.top_p,
+                ))
+        trials = []
+        for answer in answers:
+            prediction = self._normalize_mev_text(answer)
+            trials.append({
+                'raw': answer,
+                'prediction': prediction,
+                'success': prediction == target,
+            })
+        return trials
+
+    def _mev_recovery_score(self, instruction, observation, history,
+                            action_text, entities, action_options=None,
+                            action_index=None, candidate_indices=None):
+        """Return an action-conditioned masked-entity likelihood ratio.
+
+        Language-only recoverability is removed with a no-action baseline. A
+        positive margin means that conditioning on this candidate makes the
+        target entity more likely than instruction context alone.
+        """
+        if not entities:
+            return 0.0, []
+        if getattr(self, 'verifier_llm', None) is None:
+            return 0.0, []
+        entity_records = []
+        for entity in entities:
+            masked_instruction = self._mask_mev_entity(instruction, entity)
+            masked_observation = self._hide_mev_entity(observation, entity)
+            masked_history = self._hide_mev_entity(history, entity)
+            masked_candidate = self._hide_mev_entity(action_text, entity)
+            candidate_prompt = self._make_mev_likelihood_prompt(
+                masked_instruction, masked_observation, masked_history,
+                masked_candidate)
+            baseline_prompt = self._make_mev_likelihood_prompt(
+                masked_instruction, masked_observation, masked_history,
+                'None')
+            candidate_logprob = self._qwen_target_logprob(
+                candidate_prompt, entity)
+            baseline_key = (masked_instruction, masked_observation,
+                            masked_history, entity)
+            if baseline_key not in self._mev_logprob_cache:
+                self._mev_logprob_cache[baseline_key] = self._qwen_target_logprob(
+                    baseline_prompt, entity)
+            baseline_logprob = self._mev_logprob_cache[baseline_key]
+            margin = candidate_logprob - baseline_logprob
+            temperature = max(float(self.args.mev_logprob_temperature), 1e-6)
+            normalized_score = 1.0 / (1.0 + math.exp(-margin / temperature))
+            entity_records.append({
+                'entity': entity,
+                'masked_instruction': masked_instruction,
+                'candidate_action': action_text,
+                'masked_observation': masked_observation,
+                'masked_history': masked_history,
+                'candidate_logprob': candidate_logprob,
+                'baseline_logprob': baseline_logprob,
+                'logprob_margin': margin,
+                'normalized_score': normalized_score,
+            })
+        score = float(np.mean([item['normalized_score']
+                               for item in entity_records]))
+        return score, entity_records
+
+    def _mev_pairwise_score(self, instruction, observation, history,
+                            action_text, action_index, candidates,
+                            action_options, entities, grounded=False):
+        """Score an action by contrastive entity support against peer actions.
+
+        Unlike the likelihood-ratio variant, every comparison keeps the state
+        and target fixed and changes only the candidate action.  This removes
+        the common language-completion prior and makes the score explicitly
+        relative to the alternatives proposed at this navigation step.
+        """
+        if not entities or getattr(self, 'verifier_llm', None) is None:
+            return 0.0, []
+        peers = [(idx, action) for idx, action in candidates if idx != action_index]
+        if not peers:
+            return 0.0, []
+        records = []
+        for entity in entities:
+            masked_instruction = self._mask_mev_entity(instruction, entity)
+            masked_observation = self._hide_mev_entity(observation, entity)
+            masked_history = self._hide_mev_entity(history, entity)
+            wins = 0
+            trials = []
+            for peer_index, _ in peers:
+                peer_text = (action_options[peer_index]
+                             if 0 <= peer_index < len(action_options)
+                             else f'option {peer_index}')
+                # Query both display orders for every pair. A fixed A/B
+                # preference then cancels into a tie instead of becoming a
+                # spurious action score; the parser maps each answer back to
+                # the original candidate before aggregation.
+                for swapped in (False, True):
+                    first_action = peer_text if swapped else action_text
+                    second_action = action_text if swapped else peer_text
+                    prompt = self._make_mev_pairwise_prompt(
+                        masked_instruction, entity, masked_observation,
+                        masked_history, self._hide_mev_entity(first_action, entity),
+                        self._hide_mev_entity(second_action, entity))
+                    pair_trials = self._mev_pairwise_trials(prompt)
+                    for item in pair_trials:
+                        # `success` means the displayed first action won. If
+                        # the display order was swapped, the original
+                        # candidate wins when the displayed second action won.
+                        item['candidate_won'] = (
+                            not item['success'] if swapped else item['success'])
+                        wins += int(item['candidate_won'])
+                        item['swapped'] = swapped
+                    trials.extend(pair_trials)
+            total = len(trials)
+            pairwise_score = wins / total if total else 0.0
+            lexical = self._normalize_mev_text(entity) in self._normalize_mev_text(action_text)
+            score = (0.5 * pairwise_score + 0.5 * float(lexical)
+                     if grounded else pairwise_score)
+            records.append({
+                'entity': entity,
+                'candidate_action': action_text,
+                'wins': wins,
+                'comparisons': total,
+                'normalized_score': score,
+                'pairwise_score': pairwise_score,
+                'grounded_entity_match': bool(lexical),
+                'trials': trials,
+            })
+        return float(np.mean([item['normalized_score'] for item in records])), records
+
+    def _run_mev_language_controls(self, candidates, instruction, observation,
+                                   history, action_options, gt_action, instr_id,
+                                   viewpoint, step):
+        entities = self._extract_mev_entities(instruction)
+        if not entities:
+            return
+        for candidate_index, (action, _) in enumerate(candidates):
+            action_text = (action_options[action] if 0 <= action < len(action_options)
+                           else f'option {action}')
+            alternatives = [
+                option for idx, option in enumerate(action_options) if idx != action
+            ]
+            random_action = random.choice(alternatives) if alternatives else action_text
+            condition_actions = {
+                'full': action_text,
+                'without_action': None,
+                'random_action': random_action,
+            }
+            conditions = {}
+            for condition, conditioned_action in condition_actions.items():
+                entity_records = []
+                for entity in entities:
+                    masked = self._mask_mev_entity(instruction, entity)
+                    prompt = self._make_mev_recovery_prompt(
+                        masked, observation, history, conditioned_action
+                    )
+                    trials = self._mev_recovery_trials(prompt, entity)
+                    successes = sum(int(trial['success']) for trial in trials)
+                    entity_records.append({
+                        'entity': entity,
+                        'masked_instruction': masked,
+                        'trials': trials,
+                        'successes': successes,
+                        'majority_correct': successes > len(trials) / 2,
+                    })
+                total_trials = sum(len(item['trials']) for item in entity_records)
+                total_successes = sum(item['successes'] for item in entity_records)
+                conditions[condition] = {
+                    'conditioned_action': conditioned_action,
+                    'normalized_score': (total_successes / total_trials
+                                         if total_trials else 0.0),
+                    'entity_records': entity_records,
+                }
+            self.mev_control_fp.write(json.dumps({
+                'instr_id': instr_id,
+                'step': int(step),
+                'viewpoint': viewpoint,
+                'candidate_index': candidate_index,
+                'candidate_action': int(action),
+                'candidate_action_text': action_text,
+                'gt_action': int(gt_action) if gt_action is not None else None,
+                'is_correct': bool(gt_action is not None and action == gt_action),
+                'entities': entities,
+                'conditions': conditions,
+            }) + '\n')
+
     def _reverse_verification_selection(self, actions_for_batch, nav_outputs_for_batch, nav_input, cand_inputs, obs, t, batch_idx):
         """
         使用反向验证来选择最佳动作
@@ -1312,20 +2030,17 @@ class Seq2SeqCMTAgent(BaseAgent):
         """
         response = response.lower().strip()
         
-        # 检查明确的True/False回答
+        # Preserve the original repository parser for reconstruction fidelity.
         if 'true' in response:
             return True
         elif 'false' in response:
             return False
-        
-        # 检查其他可能的正面回答
+
         positive_indicators = ['yes', 'correct', '正确', '是', '对', '正确的', '对的', '好的', '可以']
         negative_indicators = ['no', 'incorrect', 'wrong', '错误', '否', '不对', '错的', '不正确', '不好', '不可以']
-        
         for indicator in positive_indicators:
             if indicator in response:
                 return True
-        
         for indicator in negative_indicators:
             if indicator in response:
                 return False

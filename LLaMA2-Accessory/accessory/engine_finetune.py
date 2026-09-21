@@ -30,6 +30,9 @@ def train_one_epoch(model: torch.nn.Module,
     for data_iter_step, batch_data in enumerate(
         metric_logger.log_every(data_loader, print_freq, header, start_iter), start=start_iter):
 
+        if args.max_train_steps and data_iter_step >= args.max_train_steps:
+            break
+
         if len(batch_data) == 4:
             examples, labels, example_mask, imgs = batch_data
         else:

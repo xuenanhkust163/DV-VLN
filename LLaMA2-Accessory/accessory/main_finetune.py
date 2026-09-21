@@ -84,6 +84,8 @@ def get_args_parser():
                         help='lower lr bound for cyclic schedulers that hit 0')
 
     parser.add_argument('--epochs', default=10, type=int)
+    parser.add_argument('--max_train_steps', default=0, type=int,
+                        help='Smoke test: limit batches per epoch; 0 means full epoch')
     parser.add_argument('--warmup_epochs', type=float, default=1.0, metavar='N',
                         help='epoch to warmup LR')
 
@@ -249,7 +251,7 @@ def main(args):
             "fsdp": ShardingStrategy.FULL_SHARD,
         }[args.data_parallel],
         device_id=device,
-        ignored_parameters=[param for param in model.parameters() if not param.requires_grad]
+        ignored_states=[param for param in model.parameters() if not param.requires_grad]
     )
 
     # broadcast nonmp parameters within model parallel group
@@ -260,7 +262,6 @@ def main(args):
         print("apply gradient checkpointing")
         non_reentrant_wrapper = partial(
             checkpoint_wrapper,
-            offload_to_cpu=False,
             checkpoint_impl=CheckpointImpl.NO_REENTRANT,
         )
         check_fn = lambda submodule: isinstance(submodule, TransformerBlock)

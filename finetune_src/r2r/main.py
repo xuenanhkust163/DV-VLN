@@ -76,7 +76,9 @@ def build_dataset(args, rank=0, is_test=False):
         elif args.dataset == 'rxr':
             val_env_names.extend(['test_challenge_public', 'test_standard_public'])
 
-    if args.llm_predict:
+    if args.eval_splits:
+        val_env_names = args.eval_splits
+    elif args.llm_predict:
         val_env_names = ['val_unseen_subset','val_seen','val_train_seen']
 
     val_envs = {}
@@ -84,6 +86,8 @@ def build_dataset(args, rank=0, is_test=False):
         val_instr_data = construct_instrs(
             args.anno_dir, args.dataset, [split], tokenizer=tok, max_instr_len=args.max_instr_len,args=args
         )
+        if args.eval_max_instrs is not None:
+            val_instr_data = val_instr_data[:args.eval_max_instrs]
         val_env = dataset_class(
             feat_db_val, val_instr_data, args.connectivity_dir, batch_size=args.batch_size,
             angle_feat_size=args.angle_feat_size, seed=args.seed+rank,
@@ -236,10 +240,16 @@ def train(args, train_env, val_envs, aug_env=None, rank=-1):
 
 def valid(args, train_env, val_envs, rank=-1):
     if args.llm_predict:
-        sys.path.append("/path/to/VLN-SIG/LLaMA2-Accessory/accessory")
+        local_accessory = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../LLaMA2-Accessory/accessory'))
+        sys.path.append(local_accessory)
         from util import misc
         misc.init_distributed_mode(args)
-        fs_init.initialize_model_parallel(args.model_parallel_size)
+        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+            os.environ.setdefault('MASTER_ADDR', '127.0.0.1')
+            os.environ.setdefault('MASTER_PORT', '29592')
+            torch.distributed.init_process_group(backend='gloo', rank=0, world_size=1)
+        if not fs_init.model_parallel_is_initialized():
+            fs_init.initialize_model_parallel(args.model_parallel_size)
         default_gpu = is_dist_avail_and_initialized()
     else:
         default_gpu = is_default_gpu(args)
@@ -267,10 +277,19 @@ def valid(args, train_env, val_envs, rank=-1):
         agent.env = env
 
         iters = None
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
         start_time = time.time()
         print(f"Beginning evaluation of {env_name}")
         agent.test(use_dropout=False, feedback='argmax', iters=iters)
         print(env_name, 'cost time: %.2fs' % (time.time() - start_time))
+        if torch.cuda.is_available():
+            print(
+                f'{env_name} CUDA peak allocated: '
+                f'{torch.cuda.max_memory_allocated() / (1024 ** 2):.2f} MiB; '
+                f'peak reserved: '
+                f'{torch.cuda.max_memory_reserved() / (1024 ** 2):.2f} MiB'
+            )
         preds = agent.get_results()
         preds = merge_dist_results(all_gather(preds))
 

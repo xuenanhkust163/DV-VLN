@@ -50,7 +50,10 @@ class EnvBatch(object):
             sim.setDiscretizedViewingAngles(True)   # Set increment/decrement to 30 degree. (otherwise by radians)
             sim.setCameraResolution(self.image_w, self.image_h)
             sim.setCameraVFOV(math.radians(self.vfov))
-            sim.init()
+            if hasattr(sim, 'initialize'):
+                sim.initialize()
+            else:
+                sim.init()
             self.sims.append(sim)
 
     def _make_id(self, scanId, viewpointId):
@@ -58,7 +61,10 @@ class EnvBatch(object):
 
     def newEpisodes(self, scanIds, viewpointIds, headings):
         for i, (scanId, viewpointId, heading) in enumerate(zip(scanIds, viewpointIds, headings)):
-            self.sims[i].newEpisode(scanId, viewpointId, heading, 0)
+            try:
+                self.sims[i].newEpisode([scanId], [viewpointId], [heading], [0])
+            except TypeError:
+                self.sims[i].newEpisode(scanId, viewpointId, heading, 0)
 
     def getStates(self):
         """
@@ -70,6 +76,8 @@ class EnvBatch(object):
         feature_states = []
         for i, sim in enumerate(self.sims):
             state = sim.getState()
+            if isinstance(state, (list, tuple)):
+                state = state[0]
 
             feature = self.feat_db.get_image_feature(state.scanId, state.location.viewpointId)
             feature_states.append((feature, state))
@@ -79,7 +87,10 @@ class EnvBatch(object):
         ''' Take an action using the full state dependent action interface (with batched input).
             Every action element should be an (index, heading, elevation) tuple. '''
         for i, (index, heading, elevation) in enumerate(actions):
-            self.sims[i].makeAction(index, heading, elevation)
+            try:
+                self.sims[i].makeAction([index], [heading], [elevation])
+            except TypeError:
+                self.sims[i].makeAction(index, heading, elevation)
 
 
 class R2RBatch(object):
@@ -128,7 +139,8 @@ class R2RBatch(object):
 
         self.args = args
 
-        count = np.load("../visual_token_count.npy")
+        count_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../visual_token_count.npy'))
+        count = np.load(count_path)
         count_dict = {}
         for i in range(len(count)):
             count_dict[i] = count[i]
@@ -219,19 +231,35 @@ class R2RBatch(object):
         long_id = "%s_%s" % (scanId, viewpointId)
 
         candidate_caption_dir = self.args.candidate_cap_dir + '/' + scanId + '/' + viewpointId + '/' + long_id + '.json'
-        with open(candidate_caption_dir) as f:
-            candidate_caption = json.load(f)
+        if os.path.exists(candidate_caption_dir):
+            with open(candidate_caption_dir) as f:
+                candidate_caption = json.load(f)
+        else:
+            # Captions are only required by the LLM predictor; keep baseline
+            # navigation usable when the optional caption corpus is absent.
+            candidate_caption = defaultdict(str)
 
         if long_id not in self.buffered_state_dict:
             for ix in range(36):
                 if ix == 0:
-                    self.sim.newEpisode(scanId, viewpointId, 0, math.radians(-30))
+                    try:
+                        self.sim.newEpisode([scanId], [viewpointId], [0], [math.radians(-30)])
+                    except TypeError:
+                        self.sim.newEpisode(scanId, viewpointId, 0, math.radians(-30))
                 elif ix % 12 == 0:
-                    self.sim.makeAction(0, 1.0, 1.0)
+                    try:
+                        self.sim.makeAction([0], [1.0], [1.0])
+                    except TypeError:
+                        self.sim.makeAction(0, 1.0, 1.0)
                 else:
-                    self.sim.makeAction(0, 1.0, 0)
+                    try:
+                        self.sim.makeAction([0], [1.0], [0])
+                    except TypeError:
+                        self.sim.makeAction(0, 1.0, 0)
 
                 state = self.sim.getState()
+                if isinstance(state, (list, tuple)):
+                    state = state[0]
                 assert state.viewIndex == ix
 
                 long_id_ix = long_id+'_'+str(ix)
